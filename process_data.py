@@ -58,34 +58,35 @@ def processData(label_file_name, train_imgs_dir, train_label_dir, output_dir, im
     # open and resize the input images
     file_name = name_split[0] + '_leftImg8bit'
     img_path = train_imgs_dir + file_name
-    img = cv2.resize(cv2.imread(img_path+'.png', -1), (image_shape[1], image_shape[0]))
+    img = cv2.resize(cv2.imread(img_path+'.png', -1), (image_shape[1], image_shape[0]), interpolation=cv2.INTER_NEAREST)
 
     # open and resize the label images
     label_path = train_label_dir + label_file_name
     label_img = cv2.imread(label_path, -1)
+    #cv2.imshow("img", img)
     # map ground truths to training labels
-    label_img = cv2.resize(mapLabel(label_img), (image_shape[1], image_shape[0]))
+    label_img = cv2.resize(mapLabel(label_img), (image_shape[1], image_shape[0]), interpolation=cv2.INTER_NEAREST)
+
+    #onehot = (np.arange(21) == label_img[:, :, None] - 1).astype(np.uint8)
+    #cv2.imshow("label_img", onehot[:,:,0:3] * 250)
+    #cv2.waitKey(0)
 
     # save the input image
     img_out_name = output_dir + file_name
-    #address_list.append(img_out_name + '.png')
     cv2.imwrite(img_out_name + '.png', img)
 
     # save the label image
     label_out_name = img_out_name + '_label'
-    #address_list.append(label_out_name + '.png')
     cv2.imwrite(label_out_name + '.png', label_img)
 
     address_list.append([img_out_name + '.png', label_out_name + '.png'])
 
     # save the horizontal flipped input image
     img_out_name = img_out_name + '_horz_flip'
-    #address_list.append(img_out_name + '.png')
     cv2.imwrite(img_out_name + '.png', cv2.flip(img, 1))
 
     # save the horizontal flipped label image
     label_out_name = label_out_name + '_horz_flip'
-    #address_list.append(label_out_name + '.png')
     cv2.imwrite(label_out_name + '.png', cv2.flip(label_img, 1))
 
     address_list.append([img_out_name + '.png', label_out_name + '.png'])
@@ -152,7 +153,8 @@ def loadAllData(input_rgb_dir, input_label_dir, output_dir, image_shape):
 '''
 def inputHelp(msg, exit_code):
     print(msg)
-    print('process_data.py [-i --ifolder] <network inputfolder> [-l --lfolder] <network labelfolder> [-o --ofolder] <outputfolder>')
+    print('process_data.py [-i --ifolder] <network inputfolder> [-l --lfolder] <network labelfolder> '
+          '[-o --ofolder] <outputfolder> [-s --shape] <output image shape>')
     sys.exit(exit_code)
 
 
@@ -165,7 +167,7 @@ if __name__ == '__main__':
     image_shape = (256, 512)
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:],'hil:o',["ifolder=","lfolder=","ofolder="])
+        opts, args = getopt.getopt(sys.argv[1:],'hilo:s',["ifolder=","lfolder=","ofolder=","shape="])
     except getopt.GetoptError:
         inputHelp('Error collecting arguments.', 2)
 
@@ -181,20 +183,31 @@ if __name__ == '__main__':
             input_label_dir = arg
         elif opt in ("-o", "--ofolder"):
             output_dir = arg
+        elif opt in ("-s", "--shape"):
+            image_shape = arg
         else:
             inputHelp('Unknown argument {}'.format(opt), 2)
+
+    try:
+        if(len(image_shape) != 2):
+            print("image_shape [ {} ] is not in the form (1,2).".format(image_shape))
+            exit(1)
+    except:
+        print("image_shape [ {} ] is not in the form (1,2).".format(image_shape))
+        exit(1)
+
+    if (not os.path.exists(input_rgb_dir)):
+        print("Directory [ {} ] does not exist.".format(input_rgb_dir))
+        exit(1)
+    if (not os.path.exists(input_label_dir)):
+        print("Directory [ {} ] does not exist.".format(input_label_dir))
+        exit(1)
+    if (not os.path.exists(output_dir)):
+        os.makedirs(output_dir)
 
     print('Input folder is {}'.format(input_rgb_dir))
     print('Label folder is {}'.format(input_label_dir))
     print('Output folder is {}'.format(output_dir))
-
-    if(not os.path.exists(input_rgb_dir)):
-        print("Directory [ {} ] does not exist.".format(input_rgb_dir))
-        exit(1)
-    if(not os.path.exists(input_label_dir)):
-        print("Directory [ {} ] does not exist.".format(input_label_dir))
-        exit(1)
-    if(not os.path.exists(output_dir)):
-        os.makedirs(output_dir)
+    print('Image output shape is {}'.format(image_shape))
 
     loadAllData(input_rgb_dir, input_label_dir, output_dir, image_shape)
