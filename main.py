@@ -5,6 +5,7 @@ import os
 import pickle
 import numpy as np
 from pathlib import Path
+import helper
 
 import model2
 import generator as gen
@@ -127,7 +128,7 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
                                         feed_dict={input_image: images,
                                                    correct_label: labels,
                                                    is_training: True,
-                                                   learning_rate: 0.01})
+                                                   learning_rate: 0.0002})
             batch += 1
 
             # add summaries to tensorboard
@@ -191,7 +192,7 @@ def run(image_shape, train_list, num_classes):
     else:
         print('Default GPU Device: {}'.format(tf.test.gpu_device_name()))
     epochs = 1
-    batch_size = 4
+    batch_size = 2
 
     runs_dir = './runs'
     restore_dir = "./model/checkpoints/"
@@ -215,6 +216,9 @@ def run(image_shape, train_list, num_classes):
 
             #predict(logits)
 
+            # Save inference data using helper.save_inference_samples
+            helper.save_inference_samples(runs_dir, sess, image_shape, logits, x_input, is_training)
+
 
     else:
         # create a new model and start training
@@ -236,7 +240,7 @@ def run(image_shape, train_list, num_classes):
             #predict(logits)
 
             # Save inference data using helper.save_inference_samples
-            #helper.save_inference_samples(runs_dir, sess, image_shape, logits, x_input, is_training)
+            helper.save_inference_samples(runs_dir, sess, image_shape, logits, x_input, is_training)
 
 
     print("\nFinished")

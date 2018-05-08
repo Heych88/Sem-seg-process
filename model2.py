@@ -63,7 +63,7 @@ def pooling(x, name='max_pool'):
     return tf.nn.max_pool(x, ksize, pool_strides, padding='SAME', name=name)
 
 
-def convolution(x, filter_size, is_training, ksize=(3,3), strides=(1,1), padding='SAME', name='conv', alpha=0.01):
+def convolution(x, filter_size, is_training, ksize=(3,3), strides=(1,1), padding='SAME', name='conv', use_bias=True, alpha=0.01):
     '''
     Convolution layer where each layer will max pool with kernel size (2,2) and strides (2,2)
     this will result in halving the convolutioal layer
@@ -92,10 +92,16 @@ def convolution(x, filter_size, is_training, ksize=(3,3), strides=(1,1), padding
         stride = [1, strides[0], strides[1], 1]
         conv = tf.nn.conv2d(x, weight, strides=stride, padding=padding, name=name+'_conv')
 
-        batch_norm = batch_normalisation(conv, filter_size, is_training, name=name+'_bn')
+        if use_bias:
+            bias = tf.Variable(tf.constant(0.1, shape=[filter_size]), name='conv_bias')
+            variable_summaries(bias, 'bias_' + name)  # save the weight summary for tensorboard
+
+            conv = tf.nn.bias_add(conv, bias)
+        else:
+            conv = batch_normalisation(conv, filter_size, is_training, name=name+'_bn')
 
         # Leaky ReLU activation
-        lrelu = tf.maximum(alpha * batch_norm, batch_norm)
+        lrelu = tf.maximum(alpha * conv, conv)
         tf.summary.histogram('activation_' + name, lrelu)
 
         return lrelu
@@ -149,13 +155,50 @@ def residualUnit(inputs, filters, name, is_training=False):
         The downsampled convolution
     '''
     with tf.name_scope(name):
-        conv_1 = convolution(inputs, filters, is_training, ksize=(1,1), name=name+'_RU_conv_1_1')
+        conv_1 = convolution(inputs, filters, is_training, ksize=(1,1), use_bias=False, name=name+'_RU_conv_1_1')
 
-        conv_2 = convolution(inputs, filters, is_training, ksize=(1, 1), name=name + '_RU_conv_2_1')
-        conv_2 = convolution(conv_2, filters, is_training, ksize=(3, 3), name=name + '_RU_conv_2_2')
-        conv_2 = convolution(conv_2, filters, is_training, ksize=(3, 3), name=name + '_RU_conv_2_3')
+        conv_2 = convolution(inputs, filters, is_training, ksize=(1, 1), use_bias=False, name=name + '_RU_conv_2_1')
+        conv_2 = convolution(conv_2, filters, is_training, ksize=(3, 3), use_bias=False, name=name + '_RU_conv_2_2')
+        conv_2 = convolution(conv_2, filters, is_training, ksize=(3, 3), use_bias=False, name=name + '_RU_conv_2_3')
 
         return tf.add(conv_1, conv_2, name=name+'_RU_conv_add')
+
+
+def encoder(ps, rs, filters, loops, name, is_training=False, is_encoder=True):
+
+    with tf.name_scope(name):
+        ps_pool = ps
+        if is_encoder:
+            ps_pool = pooling(ps_pool)
+        else:
+            # in the decoder so we need to unpool
+            ps_pool = deconvolution(ps_pool, filters, is_training=is_training, name=name + 'ps_deconv_1')
+
+        # pool the residual stream to add into the pooling stream
+        rs_pool = rs
+        for i in range(1, 1 + loops):
+            rs_pool = pooling(rs_pool)
+
+        ps_pool = tf.concat([rs_pool, ps_pool], axis=3)  # Concat in the 4th dim to stack
+        #ps_pool = batch_normalisation(ps_pool, filters, is_training=is_training, name=name + '_bn')
+
+        ps_pool = convolution(ps_pool, filters, is_training=is_training, ksize=(3, 3), use_bias=False, name=name + '_EN_conv_1_1')
+        ps_pool = convolution(ps_pool, filters, is_training=is_training, ksize=(3, 3), use_bias=False, name=name + '_EN_conv_1_2')
+
+        # upsample inception to residual stream
+        rs_up = convolution(ps_pool, filters, is_training=is_training, ksize=(1, 1), use_bias=True, name=name + '_EN_up_conv_2')
+        loop_ratio = 4 / loops
+        for i in range(1, 1 + loops):
+            filt = int(max((4 - (i * loop_ratio)) * filters, 32))
+            rs_up = deconvolution(rs_up, filt, is_training=is_training, name=name + 'deconv'+ '_' + str(i))
+
+        # combine upsample into residual stream
+        rs = tf.add(rs, rs_up, name=name + '_encoder_final_add')
+
+        print("rs_pool shape : ", rs.get_shape())
+        print("ps_pool shape : ", ps_pool.get_shape())
+
+        return ps_pool, rs
 
 
 def model(inputs, num_classes, is_training, name='model'):
@@ -169,32 +212,41 @@ def model(inputs, num_classes, is_training, name='model'):
 
     with tf.name_scope(name):
         # Input: 28x28x3, Output: 14x14x6
-        skip_1 = residualUnit(inputs, 32, name='RS_1', is_training=is_training)
+        x = residualUnit(inputs, 32, name='RS_1_1', is_training=is_training)
+        x = residualUnit(x, 32, name='RS_1_2', is_training=is_training)
 
         # Input: 14x14x6, Output: 7x7x16
-        x = residualUnit(skip_1, 64, name='RS_2', is_training=is_training)
-        x = pooling(x)
+        ps, rs = encoder(x, x, filters=64, loops=1, name='encode_1', is_training=is_training, is_encoder=True)
+        #x = residualUnit(x, 64, name='RS_2', is_training=is_training)
+        #x = pooling(x)
 
-        x = residualUnit(x, 128, name='RS_3', is_training=is_training)
-        skip_2 = pooling(x)
+        ps, rs = encoder(ps, rs, filters=128, loops=2, name='encode_2', is_training=is_training, is_encoder=True)
+        #x = residualUnit(x, 128, name='RS_3', is_training=is_training)
+        #skip_2 = pooling(x)
 
-        x = residualUnit(skip_2, 256, name='RS_4', is_training=is_training)
-        x = pooling(x)
+        ps, rs = encoder(ps, rs, filters=256, loops=3, name='encode_3', is_training=is_training, is_encoder=True)
+        #x = residualUnit(skip_2, 256, name='RS_4', is_training=is_training)
+        #x = pooling(x)
 
-        x = residualUnit(x, 384, name='RS_5', is_training=is_training)
-        x = pooling(x)
+        ps, rs = encoder(ps, rs, filters=384, loops=4, name='encode_4', is_training=is_training, is_encoder=True)
+        #x = residualUnit(x, 384, name='RS_5', is_training=is_training)
+        #x = pooling(x)
 
-        fcu = convolution(x, 384, is_training, ksize=(1, 1), name='FCU')
+        #fcu = convolution(x, 384, is_training, ksize=(1, 1), name='FCU')
 
-        x = deconvolution(fcu, 256, is_training, name='deconv1')
+        ps, rs = encoder(ps, rs, filters=256, loops=3, name='decode_1', is_training=is_training, is_encoder=False)
+        #x = deconvolution(ps, 256, is_training, name='deconv1')
 
-        x = deconvolution(x, 128, is_training, name='deconv2')
-        x = tf.add(x, skip_2, name="skip_2_add")
+        ps, rs = encoder(ps, rs, filters=128, loops=2, name='decode_2', is_training=is_training, is_encoder=False)
+        #x = deconvolution(x, 128, is_training, name='deconv2')
+        #x = tf.add(x, skip_2, name="skip_2_add")
 
-        x = deconvolution(x, 64, is_training, name='deconv3')
+        ps, rs = encoder(ps, rs, filters=64, loops=1, name='decode_3', is_training=is_training, is_encoder=False)
+        #x = deconvolution(x, 64, is_training, name='deconv3')
 
-        x = deconvolution(x, 32, is_training, name='deconv4')
-        x = tf.add(x, skip_1, name="skip_1_add")
+        #ps, rs = encoder(ps, rs, filters=32, loops=1, name='decode_1', is_training=is_training, is_encoder=False)
+        ps = deconvolution(ps, 32, is_training, name='deconv_4')
+        x = tf.add(ps, rs, name="skip_1_add")
 
         output = residualUnit(x, num_classes, name='RS_out', is_training=is_training)
 
